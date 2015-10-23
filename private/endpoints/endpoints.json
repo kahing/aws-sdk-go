@@ -45,6 +45,10 @@
       "endpoint": "sts.amazonaws.com",
       "signingRegion": "us-east-1"
     },
+    "*/ec2metadata": {
+      "endpoint": "http://169.254.169.254/latest",
+      "signingRegion": "us-east-1"
+    },
     "us-east-1/sdb": {
       "endpoint": "sdb.amazonaws.com",
       "signingRegion": "us-east-1"

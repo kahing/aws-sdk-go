@@ -10,6 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/awsutil"
+	"github.com/aws/aws-sdk-go/aws/client"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3iface"
 )
@@ -29,15 +30,6 @@ var DefaultUploadPartSize = MinUploadPartSize
 // DefaultUploadConcurrency is the default number of goroutines to spin up when
 // using Upload().
 var DefaultUploadConcurrency = 5
-
-// DefaultUploadOptions is the default set of options used when opts is nil in
-// Upload().
-var DefaultUploadOptions = &UploadOptions{
-	PartSize:          DefaultUploadPartSize,
-	Concurrency:       DefaultUploadConcurrency,
-	LeavePartsOnError: false,
-	S3:                nil,
-}
 
 // A MultiUploadFailure wraps a failed S3 multipart upload. An error returned
 // will satisfy this interface when a multi part upload failed to upload all
@@ -205,8 +197,10 @@ type UploadOutput struct {
 	UploadID string
 }
 
-// UploadOptions keeps tracks of extra options to pass to an Upload() call.
-type UploadOptions struct {
+// The Uploader structure that calls Upload(). It is safe to call Upload()
+// on this structure for multiple objects and across concurrent goroutines.
+// Mutating the Uploader's properties is not safe to be done concurrently.
+type Uploader struct {
 	// The buffer size (in bytes) to use when buffering data into chunks and
 	// sending them as parts to S3. The minimum allowed part size is 5MB, and
 	// if this value is set to zero, the DefaultPartSize value will be used.
@@ -224,43 +218,112 @@ type UploadOptions struct {
 	// space usage on S3 and will add additional costs if not cleaned up.
 	LeavePartsOnError bool
 
-	// The client to use when uploading to S3. Leave this as nil to use the
-	// default S3 client.
+	// The client to use when uploading to S3.
 	S3 s3iface.S3API
 }
 
-// NewUploader creates a new Uploader object to upload data to S3. Pass in
-// an optional opts structure to customize the uploader behavior.
-func NewUploader(opts *UploadOptions) *Uploader {
-	if opts == nil {
-		opts = DefaultUploadOptions
+// NewUploader creates a new Uploader instance to upload objects to S3. Pass In
+// additional functional options to customize the uploader's behavior. Requires a
+// client.ConfigProvider in order to create a S3 service client. The session.Session
+// satisfies the client.ConfigProvider interface.
+//
+// Example:
+//     // The session the S3 Uploader will use
+//     sess := session.New()
+//
+//     // Create an uploader with the session and default options
+//     uploader := s3manager.NewUploader(sess)
+//
+//     // Create an uploader with the session and custom options
+//     uploader := s3manager.NewUploader(session, func(u *s3manager.Uploader) {
+//          u.PartSize = 64 * 1024 * 1024 // 64MB per part
+//     })
+func NewUploader(c client.ConfigProvider, options ...func(*Uploader)) *Uploader {
+	u := &Uploader{
+		S3:                s3.New(c),
+		PartSize:          DefaultUploadPartSize,
+		Concurrency:       DefaultUploadConcurrency,
+		LeavePartsOnError: false,
 	}
-	return &Uploader{opts: opts}
+
+	for _, option := range options {
+		option(u)
+	}
+
+	return u
 }
 
-// The Uploader structure that calls Upload(). It is safe to call Upload()
-// on this structure for multiple objects and across concurrent goroutines.
-type Uploader struct {
-	opts *UploadOptions
+// NewUploaderWithClient creates a new Uploader instance to upload objects to S3. Pass in
+// additional functional options to customize the uploader's behavior. Requires
+// a S3 service client to make S3 API calls.
+//
+// Example:
+//     // S3 service client the Upload manager will use.
+//     s3Svc := s3.New(session.New())
+//
+//     // Create an uploader with S3 client and default options
+//     uploader := s3manager.NewUploaderWithClient(s3Svc)
+//
+//     // Create an uploader with S3 client and custom options
+//     uploader := s3manager.NewUploaderWithClient(s3Svc, func(u *s3manager.Uploader) {
+//          u.PartSize = 64 * 1024 * 1024 // 64MB per part
+//     })
+func NewUploaderWithClient(svc s3iface.S3API, options ...func(*Uploader)) *Uploader {
+	u := &Uploader{
+		S3:                svc,
+		PartSize:          DefaultUploadPartSize,
+		Concurrency:       DefaultUploadConcurrency,
+		LeavePartsOnError: false,
+	}
+
+	for _, option := range options {
+		option(u)
+	}
+
+	return u
 }
 
 // Upload uploads an object to S3, intelligently buffering large files into
 // smaller chunks and sending them in parallel across multiple goroutines. You
-// can configure the buffer size and concurrency through the opts parameter.
+// can configure the buffer size and concurrency through the Uploader's parameters.
 //
-// If opts is set to nil, DefaultUploadOptions will be used.
+// Additional functional options can be provided to configure the individual
+// upload. These options are copies of the Uploader instance Upload is called from.
+// Modifying the options will not impact the original Uploader instance.
 //
-// It is safe to call this method for multiple objects and across concurrent
-// goroutines.
-func (u *Uploader) Upload(input *UploadInput) (*UploadOutput, error) {
-	i := uploader{in: input, opts: *u.opts}
+// It is safe to call this method concurrently across goroutines.
+//
+// Example:
+//     // Upload input parameters
+//     upParams := &s3manager.UploadInput{
+//         Bucket: &bucketName,
+//         Key:    &keyName,
+//         Body:   file,
+//     }
+//
+//     // Perform an upload.
+//     result, err := uploader.Upload(upParams)
+//
+//     // Perform upload with options different than the those in the Uploader.
+//     result, err := uploader.Upload(upParams, func(u *s3manager.Uploader) {
+//          u.PartSize = 10 * 1024 * 1024 // 10MB part size
+//          u.LeavePartsOnError = true    // Dont delete the parts if the upload fails.
+//     })
+func (u Uploader) Upload(input *UploadInput, options ...func(*Uploader)) (*UploadOutput, error) {
+	i := uploader{in: input, opts: u}
+
+	for _, option := range options {
+		option(&i.opts)
+	}
+
 	return i.upload()
 }
 
 // internal structure to manage an upload to S3.
 type uploader struct {
-	in   *UploadInput
-	opts UploadOptions
+	opts Uploader
+
+	in *UploadInput
 
 	readerPos int64 // current reader position
 	totalSize int64 // set to -1 if the size is not known
@@ -290,9 +353,6 @@ func (u *uploader) upload() (*UploadOutput, error) {
 
 // init will initialize all default options.
 func (u *uploader) init() {
-	if u.opts.S3 == nil {
-		u.opts.S3 = s3.New(nil)
-	}
 	if u.opts.Concurrency == 0 {
 		u.opts.Concurrency = DefaultUploadConcurrency
 	}

@@ -35,8 +35,8 @@ import (
 type EC2RoleProvider struct {
 	credentials.Expiry
 
-	// EC2Metadata client to use when connecting to EC2 metadata service
-	Client *ec2metadata.Client
+	// Required EC2Metadata client to use when connecting to EC2 metadata service.
+	Client *ec2metadata.EC2Metadata
 
 	// ExpiryWindow will allow the credentials to trigger refreshing prior to
 	// the credentials actually expiring. This is beneficial so race conditions
@@ -53,16 +53,12 @@ type EC2RoleProvider struct {
 // NewCredentials returns a pointer to a new Credentials object
 // wrapping the EC2RoleProvider.
 //
-// Takes a custom http.Client which can be configured for custom handling of
-// things such as timeout.
-//
-// Endpoint is the URL that the EC2RoleProvider will connect to when retrieving
-// role and credentials.
+// Required EC2Metadata client to use when connecting to EC2 metadata service.
 //
 // Window is the expiry window that will be subtracted from the expiry returned
 // by the role credential request. This is done so that the credentials will
 // expire sooner than their actual lifespan.
-func NewCredentials(client *ec2metadata.Client, window time.Duration) *credentials.Credentials {
+func NewCredentials(client *ec2metadata.EC2Metadata, window time.Duration) *credentials.Credentials {
 	return credentials.NewCredentials(&EC2RoleProvider{
 		Client:       client,
 		ExpiryWindow: window,
@@ -73,10 +69,6 @@ func NewCredentials(client *ec2metadata.Client, window time.Duration) *credentia
 // Error will be returned if the request fails, or unable to extract
 // the desired credentials.
 func (m *EC2RoleProvider) Retrieve() (credentials.Value, error) {
-	if m.Client == nil {
-		m.Client = ec2metadata.New(nil)
-	}
-
 	credsList, err := requestCredList(m.Client)
 	if err != nil {
 		return credentials.Value{}, err
@@ -101,7 +93,7 @@ func (m *EC2RoleProvider) Retrieve() (credentials.Value, error) {
 	}, nil
 }
 
-// A ec2RoleCredRespBody provides the shape for deserializing credential
+// A ec2RoleCredRespBody provides the shape for unmarshalling credential
 // request responses.
 type ec2RoleCredRespBody struct {
 	// Success State
@@ -119,7 +111,7 @@ const iamSecurityCredsPath = "/iam/security-credentials"
 
 // requestCredList requests a list of credentials from the EC2 service.
 // If there are no credentials, or there is an error making or receiving the request
-func requestCredList(client *ec2metadata.Client) ([]string, error) {
+func requestCredList(client *ec2metadata.EC2Metadata) ([]string, error) {
 	resp, err := client.GetMetadata(iamSecurityCredsPath)
 	if err != nil {
 		return nil, awserr.New("EC2RoleRequestError", "failed to list EC2 Roles", err)
@@ -142,7 +134,7 @@ func requestCredList(client *ec2metadata.Client) ([]string, error) {
 //
 // If the credentials cannot be found, or there is an error reading the response
 // and error will be returned.
-func requestCred(client *ec2metadata.Client, credsName string) (ec2RoleCredRespBody, error) {
+func requestCred(client *ec2metadata.EC2Metadata, credsName string) (ec2RoleCredRespBody, error) {
 	resp, err := client.GetMetadata(path.Join(iamSecurityCredsPath, credsName))
 	if err != nil {
 		return ec2RoleCredRespBody{},

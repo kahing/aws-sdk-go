@@ -42,7 +42,7 @@ type AssumeRoler interface {
 type AssumeRoleProvider struct {
 	credentials.Expiry
 
-	// Custom STS client. If not set the default STS client will be used.
+	// STS client to make assume role request with.
 	Client AssumeRoler
 
 	// Role to be assumed.
@@ -91,9 +91,6 @@ func NewCredentials(client AssumeRoler, roleARN string, window time.Duration) *c
 func (p *AssumeRoleProvider) Retrieve() (credentials.Value, error) {
 
 	// Apply defaults where parameters are not set.
-	if p.Client == nil {
-		p.Client = sts.New(nil)
-	}
 	if p.RoleSessionName == "" {
 		// Try to work out a role name that will hopefully end up unique.
 		p.RoleSessionName = fmt.Sprintf("%d", time.Now().UTC().UnixNano())
